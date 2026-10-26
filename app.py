@@ -1,109 +1,254 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-st.set_page_config(page_title="Student Performance Predictor", layout="wide")
-st.title("Student Performance Predictor")
+st.set_page_config(page_title="Student Performance Predictor", page_icon="🎓", layout="wide")
+
+# ---------- Session state ----------
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+# ---------- Header ----------
+st.title("🎓 Student Performance Predictor")
 st.caption(
-    "Upload Student_Performance.csv, explore a column, then fit a line that predicts "
-    "Performance Index from two numeric inputs."
+    "Upload a CSV with **at least three numeric columns**. Explore a column, fit a "
+    "straight line that predicts one target from two inputs, and try predictions."
 )
 
-uploaded_file = st.file_uploader("Upload a CSV file", type="csv")
+# ---------- Sidebar: data source ----------
+with st.sidebar:
+    st.header("📁 Data source")
+    uploaded = st.file_uploader("Upload a CSV", type="csv")
+    use_sample = st.checkbox(
+        "Use built-in `Student_Performance.csv`",
+        value=False,
+        help="Works if the CSV is placed next to `app.py` in the repo.",
+    )
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
+    df = None
+    if uploaded is not None:
+        try:
+            df = pd.read_csv(uploaded)
+        except Exception as e:
+            st.error(f"Could not read the file: {e}")
+    elif use_sample:
+        try:
+            df = pd.read_csv("Student_Performance.csv")
+        except FileNotFoundError:
+            st.error("`Student_Performance.csv` not found next to `app.py`.")
 
-    # ---------- Preview ----------
-    st.subheader("Preview")
-    st.dataframe(df.head(10), use_container_width=True)
+    if df is not None:
+        st.success(f"Loaded: **{len(df):,}** rows × **{df.shape[1]}** columns")
 
-    numeric_cols = df.select_dtypes(include="number").columns.tolist()
-    if len(numeric_cols) < 3:
-        st.error("This app needs at least three numeric columns: two inputs and one target.")
-        st.stop()
+    st.divider()
+    if st.button("🧹 Reset prediction history", use_container_width=True):
+        st.session_state.history.clear()
+        st.toast("Prediction history cleared.")
 
-    # ---------- Explore a column ----------
-    st.subheader("Explore a column")
-    default_chart_col = numeric_cols[-1]  # Performance Index in the sample file
-    chart_col = st.selectbox("Column to chart", numeric_cols, index=numeric_cols.index(default_chart_col))
-    chart_type = st.selectbox("Chart type", ["Histogram", "Line", "Scatter"])
+if df is None:
+    st.info("👈 Upload a CSV in the sidebar (or tick the sample option) to start.")
+    st.stop()
 
+# ---------- Column validation ----------
+numeric_cols = df.select_dtypes(include="number").columns.tolist()
+usable = [c for c in numeric_cols if df[c].notna().sum() >= 5 and df[c].nunique() > 1]
+
+if len(usable) < 3:
+    st.error(
+        f"This app needs at least **three usable numeric columns** "
+        f"(two inputs + one target). Usable: {usable or 'none'}. "
+        f"Numeric in file: {numeric_cols or 'none'}."
+    )
+    st.stop()
+
+# =====================================================================
+# TABS
+# =====================================================================
+tab_preview, tab_explore, tab_predict = st.tabs(["📄 Preview", "📊 Explore", "🔮 Predict"])
+
+# ---------- Preview ----------
+with tab_preview:
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Rows", f"{len(df):,}")
+    k2.metric("Columns", df.shape[1])
+    k3.metric("Numeric columns", len(numeric_cols))
+    k4.metric("Missing values", int(df.isna().sum().sum()))
+
+    st.subheader("First 20 rows")
+    st.dataframe(df.head(20), use_container_width=True, height=340)
+
+    with st.expander("📋 Column summary (numeric)"):
+        st.dataframe(
+            df[usable].describe().T[["count", "mean", "std", "min", "max"]].round(2),
+            use_container_width=True,
+        )
+
+# ---------- Explore ----------
+with tab_explore:
+    st.subheader("Chart a column")
+
+    e1, e2 = st.columns([2, 1])
+    chart_col = e1.selectbox(
+        "Column to chart", usable,
+        index=len(usable) - 1,
+        help="Only numeric columns are shown.",
+    )
+    chart_type = e2.selectbox("Chart type", ["Histogram", "Line", "Scatter"])
+
+    fig = None
     if chart_type == "Histogram":
-        fig = px.histogram(df, x=chart_col, title=f"Distribution of {chart_col}")
-        st.plotly_chart(fig, use_container_width=True)
-
+        fig = px.histogram(df, x=chart_col, nbins=40,
+                           title=f"Distribution of {chart_col}",
+                           color_discrete_sequence=["#4C78A8"])
+        fig.update_layout(bargap=0.05)
     elif chart_type == "Line":
-        # Values in row order (good for time-ordered or sequential data).
         fig = px.line(df, y=chart_col, title=f"{chart_col} in row order")
+        fig.update_traces(line_color="#F58518")
+    else:
+        others = [c for c in usable if c != chart_col]
+        if not others:
+            st.warning("Need at least two usable numeric columns for a scatter plot.")
+        else:
+            x_chart = st.selectbox("X axis for scatter", others)
+            fig = px.scatter(df, x=x_chart, y=chart_col,
+                             title=f"{chart_col} versus {x_chart}",
+                             opacity=0.7)
+    if fig is not None:
+        fig.update_layout(margin=dict(t=50, b=10), height=440)
         st.plotly_chart(fig, use_container_width=True)
 
-    else:  # Scatter needs a second numeric column for the x-axis
-        x_options = [c for c in numeric_cols if c != chart_col]
-        if not x_options:
-            st.warning("Need at least two numeric columns to draw a scatter plot.")
-        else:
-            x_col_chart = st.selectbox("X axis for scatter", x_options)
-            fig = px.scatter(df, x=x_col_chart, y=chart_col,
-                             title=f"{chart_col} versus {x_col_chart}")
-            st.plotly_chart(fig, use_container_width=True)
+# ---------- Predict ----------
+with tab_predict:
+    st.subheader("Fit a line and predict")
 
-    # ---------- Fit a linear regression ----------
-    st.subheader("Fit a linear regression")
-
-    default_target = "Performance Index" if "Performance Index" in numeric_cols else numeric_cols[-1]
-    target = st.selectbox("Target (what you want to predict)", numeric_cols,
-                          index=numeric_cols.index(default_target))
-
-    input_options = [c for c in numeric_cols if c != target]
-    input_a = st.selectbox("Input 1", input_options)
-    input_b = st.selectbox("Input 2", [c for c in input_options if c != input_a])
+    c1, c2, c3 = st.columns(3)
+    default_target = "Performance Index" if "Performance Index" in usable else usable[-1]
+    target = c1.selectbox(
+        "🎯 Target (what to predict)", usable,
+        index=usable.index(default_target),
+        help="The column the model will estimate.",
+    )
+    inputs_pool = [c for c in usable if c != target]
+    input_a = c2.selectbox("🔑 Input 1", inputs_pool, help="First feature.")
+    input_b = c3.selectbox(
+        "🔑 Input 2", [c for c in inputs_pool if c != input_a],
+        help="Second feature (must differ from Input 1).",
+    )
 
     data = df[[input_a, input_b, target]].dropna()
     if len(data) < 5:
-        st.error("Need at least 5 rows with values in all three columns.")
+        st.error("Need at least 5 rows with non-missing values in all three columns.")
         st.stop()
 
-    # IMPORTANT: X keeps the same column names AND order the model will see at predict time.
+    # IMPORTANT: the model sees the same column names AND order at fit and predict time.
     X = data[[input_a, input_b]]
     y = data[target]
 
-    model = LinearRegression()
-    model.fit(X, y)
+    with st.spinner("Fitting the model…"):
+        model = LinearRegression().fit(X, y)
+        y_pred = model.predict(X)
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric(f"Effect of {input_a}", f"{model.coef_[0]:,.3f}")
-    m2.metric(f"Effect of {input_b}", f"{model.coef_[1]:,.3f}")
-    m3.metric("R² on this data", f"{model.score(X, y):.3f}")
+    r2   = r2_score(y, y_pred)
+    mae  = mean_absolute_error(y, y_pred)
+    rmse = float(np.sqrt(mean_squared_error(y, y_pred)))
+    resid_std = float(np.std(y - y_pred, ddof=1))
 
-    # ---------- Predict ----------
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("R²", f"{r2:.3f}", help="1 = perfect fit, 0 = no better than the mean.")
+    m2.metric("MAE", f"{mae:,.2f}", help="Mean absolute error on this data.")
+    m3.metric("RMSE", f"{rmse:,.2f}", help="Root-mean-square error.")
+    m4.metric("Residual σ", f"{resid_std:,.2f}", help="Std-dev of the residuals.")
+
+    with st.expander("📐 Model coefficients"):
+        coefs = pd.DataFrame({
+            "Feature": ["(intercept)"] + list(X.columns),
+            "Coefficient": [model.intercept_] + list(model.coef_),
+        }).round(4)
+        st.dataframe(coefs, use_container_width=True, hide_index=True)
+
     st.subheader("Try it")
-    c1, c2 = st.columns(2)
-    val_a = c1.number_input(f"Enter a value for {input_a}", value=float(data[input_a].mean()))
-    val_b = c2.number_input(f"Enter a value for {input_b}", value=float(data[input_b].mean()))
-
-    # Same column names and order as training: {input_a, input_b}.
-    new_row = pd.DataFrame({input_a: [val_a], input_b: [val_b]})
-    prediction = model.predict(new_row)[0]
-    st.metric(f"Predicted {target}", f"{prediction:,.2f}")
-
-    # Warn when the user leaves the range the model was trained on.
-    lo_a, hi_a = data[input_a].min(), data[input_a].max()
-    lo_b, hi_b = data[input_b].min(), data[input_b].max()
-    if not (lo_a <= val_a <= hi_a) or not (lo_b <= val_b <= hi_b):
-        st.warning(
-            f"One or both values are outside the range the model learned from "
-            f"({input_a}: {lo_a:,.0f}–{hi_a:,.0f}, {input_b}: {lo_b:,.0f}–{hi_b:,.0f}). "
-            f"Treat this prediction with caution."
-        )
-
-    # ---------- Required one sentence ----------
-    st.info(
-        "This model estimates a student's Performance Index from two numeric factors; "
-        "when it is wrong, decisions taken from it (e.g. spotting at-risk students) can be off, "
-        "so always sanity-check the prediction against the observed range."
+    unlock = st.toggle(
+        "Allow values outside the training range",
+        value=False,
+        help="Unlocked values trigger a warning — a straight line extrapolates blindly.",
     )
 
-else:
-    st.info("Upload a CSV file to get started. It needs at least three numeric columns.")
+    def input_widget(label, col):
+        lo = float(data[col].min()); hi = float(data[col].max()); mean = float(data[col].mean())
+        if unlock or np.isclose(lo, hi):
+            return st.number_input(label, value=mean, format="%.2f",
+                                   help=f"Training range: {lo:,.2f} – {hi:,.2f}")
+        is_int = lo.is_integer() and hi.is_integer()
+        step = 1.0 if is_int else max((hi - lo) / 200.0, 0.01)
+        return st.slider(label, lo, hi, mean, step=step,
+                         help=f"Training range: {lo:,.2f} – {hi:,.2f}")
+
+    p1, p2 = st.columns(2)
+    with p1:
+        val_a = input_widget(input_a, input_a)
+    with p2:
+        val_b = input_widget(input_b, input_b)
+
+    # Same column names and order as X.
+    new_row = pd.DataFrame({input_a: [val_a], input_b: [val_b]})
+    pred = float(model.predict(new_row)[0])
+
+    pc1, pc2 = st.columns([1, 2])
+    pc1.metric(f"🎯 Predicted {target}", f"{pred:,.2f}")
+    if pc2.button("➕ Save this prediction", use_container_width=True):
+        st.session_state.history.append({
+            input_a: val_a, input_b: val_b, f"predicted {target}": round(pred, 2),
+        })
+        st.toast("Saved.")
+
+    lo_a = float(data[input_a].min()); hi_a = float(data[input_a].max())
+    lo_b = float(data[input_b].min()); hi_b = float(data[input_b].max())
+    if not (lo_a <= val_a <= hi_a) or not (lo_b <= val_b <= hi_b):
+        st.warning(
+            f"⚠️ One or both values are outside the training range "
+            f"({input_a}: {lo_a:,.2f}–{hi_a:,.2f}, {input_b}: {lo_b:,.2f}–{hi_b:,.2f}). "
+            "A line extrapolates blindly — treat this number with caution."
+        )
+
+    with st.expander("🖼️ See the prediction on a chart"):
+        sweep = pd.DataFrame({
+            input_a: np.linspace(lo_a, hi_a, 100),
+            input_b: [val_b] * 100,
+        })
+        line = model.predict(sweep)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=data[input_a], y=data[target], mode="markers",
+                                 name="Data", marker=dict(opacity=0.4)))
+        fig.add_trace(go.Scatter(x=sweep[input_a], y=line, mode="lines",
+                                 name=f"Fit at {input_b}={val_b:,.2f}",
+                                 line=dict(width=3)))
+        fig.add_trace(go.Scatter(x=[val_a], y=[pred], mode="markers",
+                                 name="Your prediction",
+                                 marker=dict(size=16, color="crimson", symbol="star")))
+        fig.update_layout(
+            title=f"{target} vs {input_a} (with {input_b} held at {val_b:,.2f})",
+            height=420, margin=dict(t=50, b=10),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    if st.session_state.history:
+        st.subheader("🗒️ Prediction history")
+        hist_df = pd.DataFrame(st.session_state.history)
+        st.dataframe(hist_df, use_container_width=True, hide_index=True)
+        st.download_button("⬇️ Download history (CSV)",
+                           hist_df.to_csv(index=False).encode(),
+                           file_name="predictions.csv", mime="text/csv")
+
+# ---------- Required one-sentence note (always visible, below the tabs) ----------
+st.divider()
+st.info(
+    "**What this model is used for, and what happens when it is wrong:** "
+    "A linear regression estimates the target as a straight-line function of the two "
+    "inputs; when it is wrong — which it always is, to some degree — those errors have "
+    "real consequences (for example flagging at-risk students), so always compare the "
+    "prediction with the observed range and the reported error metrics."
+)
