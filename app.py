@@ -246,7 +246,5 @@ with tab_predict:
 # ---------- Required one-sentence note (always visible, below the tabs) ----------
 st.divider()
 st.info(
-"This model is used to guide actions on variables such as 'Hours Studied' and 'Sleep Hours' to"
- "improve student performance. If the prediction is wrong, the measures taken could have no"
- "effect on performance, which would lead to a waste money and time."
+"This model is used to guide actions on variables such as 'Hours Studied' and 'Sleep Hours' to improve student performance. If the prediction is wrong, the measures taken could have no effect on performance, which would lead to a waste money and time."
 )
